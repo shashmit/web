@@ -15,6 +15,7 @@ export type GraphTheme = {
   teal: string;
   taupe: string;
   taupeInk: string;
+  hi: string; // highlighter fill — the "has a saved story" ring
   paper2: string;
   font: string; // resolved body font-family (Instrument Sans) for canvas labels
 };
@@ -29,6 +30,7 @@ const VARS: Record<Exclude<keyof GraphTheme, "font">, string> = {
   teal: "--teal",
   taupe: "--taupe",
   taupeInk: "--taupe-ink",
+  hi: "--hi",
   paper2: "--paper-2",
 };
 

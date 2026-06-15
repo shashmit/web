@@ -1,9 +1,10 @@
 import { Hono } from "hono";
 import { embedMany, streamText } from "ai";
-import { ChatRequestSchema, type ChatSuggestion, type ChatSource } from "@entri/types";
+import { ChatRequestSchema, CHAT_FOLLOWUP_MARKER, type ChatSuggestion, type ChatSource } from "@entri/types";
 import type { AppEnv } from "../middleware/auth.js";
 import { aiConfigured, chatConfigured, embedModel, chatModel, EMBED_MODEL } from "../lib/ai.js";
 import { regenerateSuggestions } from "../services/suggestions.js";
+import { env } from "../config/env.js";
 
 export const chat = new Hono<AppEnv>();
 
@@ -33,15 +34,38 @@ chat.get("/suggestions", async (c) => {
 
 type Chunk = { item_id: string; content: string; source_ref: string | null; similarity: number };
 
-const FLOOR = 0.3; // min cosine similarity to count a chunk as relevant
-const STRONG = 0.55; // a single chunk this strong is enough (sparse-corpus degrade)
+// Grounding thresholds for NOTES mode (bge clusters tightly + high — see config/env.ts,
+// and the graph's own 0.7 "related" floor). FLOOR = min cosine for a chunk to count as
+// relevant; STRONG = one chunk this strong grounds an answer alone. They decide whether
+// strict "notes" mode answers or refuses. ("open" mode always answers + blends general
+// knowledge, so it is NOT gated by these — it uses its own lenient context floor.)
+const FLOOR = env.GROUNDING_FLOOR;
+const STRONG = env.GROUNDING_STRONG;
 
-// POST /v1/chat  { message, mode } — retrieve-then-generate over the user's own
-// notes. >=2 relevant chunks (or 1 strong chunk) grounds an answer cited to the
-// source page. When the notes don't cover the question:
-//   - mode "notes" (default): refuse rather than invent (the trust pillar).
-//   - mode "open": answer from general AI knowledge, flagged 'ai' so the UI shows
-//     it visibly tentative (dashed taupe) — never disguised as the user's notes.
+// Snippet shown under a citation's "show more" — collapse whitespace and cap
+// length so the X-Entri-Sources header stays small (and the chip stays readable).
+const SNIPPET_MAX = 200;
+function snippetOf(content: string): string {
+  const t = content.replace(/\s+/g, " ").trim();
+  return t.length > SNIPPET_MAX ? `${t.slice(0, SNIPPET_MAX).trimEnd()}…` : t;
+}
+
+// X-Entri-Sources travels in an HTTP header (latin-1 only), but note labels and
+// snippets come from arbitrary user notes — and the snippet ellipsis itself is
+// non-ASCII. Escape everything outside ASCII to \uXXXX; it stays valid JSON, so
+// the client's plain JSON.parse decodes it back transparently.
+function sourcesHeader(sources: ChatSource[]): string {
+  return JSON.stringify(sources).replace(/[\x80-\uFFFF]/g, (c) =>
+    `\\u${c.charCodeAt(0).toString(16).padStart(4, "0")}`
+  );
+}
+
+// POST /v1/chat  { message, mode } — retrieve-then-generate over the user's own notes.
+//   - mode "notes" (default): answer STRICTLY from the notes; refuse unless >=2
+//     relevant chunks (or 1 strong chunk) cover it — the trust pillar, no invention.
+//   - mode "open" (Notes + AI): ALWAYS answer — ground in the notes where they apply
+//     (cited inline) AND supplement with general AI knowledge. The 'ai' chip always
+//     shows so general knowledge is never disguised as the user's own notes.
 chat.post("/", async (c) => {
   if (!aiConfigured()) return c.json({ error: "AI not configured on the server" }, 503);
 
@@ -49,6 +73,9 @@ chat.post("/", async (c) => {
   const parsed = ChatRequestSchema.safeParse(await c.req.json());
   if (!parsed.success) return c.json({ error: parsed.error.issues[0]?.message ?? "invalid request" }, 400);
   const { message, mode } = parsed.data;
+  // Multi-turn: the model sees the recent thread, not just the latest message.
+  // Capped so the prompt stays bounded; retrieval below still keys off `message`.
+  const turns = [...parsed.data.history.slice(-10), { role: "user" as const, content: message }];
 
   // Embed the query, then nearest-neighbour over the user's chunks (RLS-scoped).
   const { embeddings } = await embedMany({ model: embedModel(), values: [message] });
@@ -65,24 +92,60 @@ chat.post("/", async (c) => {
   const relevant = chunks.filter((ch) => ch.similarity >= FLOOR);
   const grounded = relevant.length >= 2 || (relevant.length === 1 && relevant[0].similarity >= STRONG);
 
-  // Not in their notes: refuse (notes mode) or fall through to general AI (open mode).
-  if (!grounded) {
-    if (mode !== "open") {
-      return c.text(
-        "I can't find this in your notes yet. Capture the page it's on, or switch on “Notes + AI” to let me answer from general knowledge."
-      );
+  // Score visibility so FLOOR/STRONG can be tuned against real data (bge runs high).
+  console.log(
+    `[chat] mode=${mode} grounded=${grounded} floor=${FLOOR} strong=${STRONG} top=[${chunks
+      .slice(0, 5)
+      .map((ch) => ch.similarity.toFixed(3))
+      .join(", ")}]`
+  );
+
+  // "open" (Notes + AI): the student opted in to general knowledge, so ALWAYS
+  // answer — ground in their notes where those apply (cited inline) and supplement
+  // with general AI knowledge. Never gated on the notes; that's the point of the
+  // mode. A lenient floor decides which notes to offer the model (so loosely
+  // related pages can still be cited), and the 'ai' chip always shows so the answer
+  // is never mistaken for pure-notes.
+  if (mode === "open") {
+    const CONTEXT_FLOOR = 0.45; // lenient — blend mode errs toward offering notes
+    const noteCtx = chunks.filter((ch) => ch.similarity >= CONTEXT_FLOOR);
+    const context = noteCtx.length
+      ? noteCtx.map((ch, i) => `[${i + 1}] (${ch.source_ref ?? "your notes"})\n${ch.content}`).join("\n\n")
+      : "(No closely matching notes — answer from general knowledge.)";
+    // Dedup sources by label, keeping the first (highest-similarity) chunk's text
+    // as the snippet so the UI can reveal what each citation actually said.
+    const seenLabels = new Set<string>();
+    const noteSources: ChatSource[] = [];
+    for (const ch of noteCtx) {
+      const label = ch.source_ref;
+      if (!label || seenLabels.has(label)) continue;
+      seenLabels.add(label);
+      noteSources.push({ label, kind: "note", snippet: snippetOf(ch.content) });
     }
-    const openSystem = `You are entri, a knowledgeable, friendly study tutor. The student's OWN notes don't cover this question, and they've turned on "Notes + AI" so you may answer from your general knowledge.
+    const sources: ChatSource[] = [...noteSources, { label: "General AI knowledge", kind: "ai" }];
+
+    const openSystem = `You are entri, a knowledgeable, friendly study tutor for a student preparing for an exam. Answer their question fully and accurately. They've turned on "Notes + AI", so use BOTH their own notes (below, where relevant) and your general knowledge.
 Rules:
-- Answer accurately and concisely from well-established general knowledge.
-- Do NOT claim this came from their notes, and do NOT invent a page citation or a "(→ source)" tag.
+- When a fact comes from their notes, CITE it inline as (→ <source>) using the labels shown.
+- Add accurate, well-established general knowledge to complete or clarify the answer. Do NOT attach a (→ source) citation to general knowledge, and never claim it came from their notes.
+- Ignore any note snippet below that isn't actually relevant to the question.
+- If their notes and general knowledge conflict, point out the discrepancy rather than silently overriding their notes.
 - If you're unsure or the question is ambiguous, say so plainly rather than guessing.
-- Format with light Markdown for readability: **bold** key terms, *italics* for emphasis, "-" bullet lists, and short paragraphs.`;
-    const openResult = streamText({ model: chatModel(), system: openSystem, prompt: message });
-    const openSources: ChatSource[] = [{ label: "General AI knowledge", kind: "ai" }];
+- Format with light Markdown for readability: **bold** key terms, *italics* for emphasis, "-" bullet lists, and short paragraphs.
+- AFTER your complete answer, output a line containing exactly ${CHAT_FOLLOWUP_MARKER} and then 2–3 natural follow-up questions the student is likely to ask next about this topic — one per line, phrased as the student would ask them, no numbering or bullets. Write nothing after the last follow-up.
+Notes:
+${context}`;
+    const openResult = streamText({ model: chatModel(), system: openSystem, messages: turns });
     return openResult.toTextStreamResponse({
-      headers: { "X-Entri-Sources": JSON.stringify(openSources) },
+      headers: { "X-Entri-Sources": sourcesHeader(sources) },
     });
+  }
+
+  // "notes" (default): strict — answer ONLY from the notes, refuse if uncovered.
+  if (!grounded) {
+    return c.text(
+      "I can't find this in your notes yet. Capture the page it's on, or switch on “Notes + AI” to let me answer from general knowledge."
+    );
   }
 
   const context = relevant
@@ -101,8 +164,8 @@ Rules:
 Notes:
 ${context}`;
 
-  const result = streamText({ model: chatModel(), system, prompt: message });
+  const result = streamText({ model: chatModel(), system, messages: turns });
   return result.toTextStreamResponse({
-    headers: { "X-Entri-Sources": JSON.stringify(sources) },
+    headers: { "X-Entri-Sources": sourcesHeader(sources) },
   });
 });

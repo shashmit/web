@@ -4,16 +4,20 @@
 // tooltip is the quick peek; this is the interactive panel). It surfaces what
 // entri already knows about the concept — its one-clause gloss, the concepts it
 // relates to, and the cards it appears in — then lets the student go deeper:
-// "Tell me more" streams a grounded, source-cited explanation right here, and
-// "Continue in chat" carries the thread to the full /chat surface.
+// "Tell me more" blends their notes with general AI knowledge into a brief that
+// is SAVED (so it isn't regenerated, and the node grows a story ring), can be
+// added to their reviews, and continues in the full /chat surface.
 //
-// Trust rule (DESIGN.md): everything here is AI-inferred, so it must read
-// visibly tentative — taupe, dashed, italic — and the generated brief is
-// grounded strictly in the student's own notes (it refuses if it can't find it).
+// Trust rule (DESIGN.md): everything here is AI-inferred, so it reads visibly
+// tentative — taupe, dashed, italic. The brief cites note pages (teal) and
+// labels general-AI parts (taupe); fabricated citations are stripped client-side.
 import Link from "next/link";
 import { useEffect, useRef, useState } from "react";
-import type { Graph, GraphNode } from "@/lib/api-types";
-import { apiStream } from "@/lib/api";
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
+import { ChatSourceListSchema, ConceptBriefSchema, type ChatSource, type Graph, type GraphNode } from "@/lib/api-types";
+import { api, apiStream } from "@/lib/api";
+import { reconcileCitations } from "@/lib/citations";
 
 type Related = { node: GraphNode; predicate: string | null; outgoing: boolean };
 
@@ -25,6 +29,8 @@ function conceptQuestion(node: GraphNode): string {
 }
 
 const stripCard = (id: string) => (id.startsWith("card:") ? id.slice("card:".length) : id);
+// Graph concept ids are "concept:<uuid>"; the /v1/concepts API wants the bare uuid.
+const conceptUuid = (id: string) => (id.startsWith("concept:") ? id.slice("concept:".length) : id);
 
 export default function ConceptInspector({
   node,
@@ -32,6 +38,7 @@ export default function ConceptInspector({
   onClose,
   onPick,
   onNavigate,
+  onStoried,
 }: {
   node: GraphNode;
   graph: Graph;
@@ -41,11 +48,17 @@ export default function ConceptInspector({
   onPick: (node: GraphNode) => void;
   // open a card's note (cardId deep-links to the exact question).
   onNavigate: (noteId: string, cardId?: string) => void;
+  // tell the map a brief now exists for this concept (lights up its story ring).
+  onStoried: (nodeId: string) => void;
 }) {
   const [brief, setBrief] = useState("");
-  const [sources, setSources] = useState<string[]>([]);
+  const [sources, setSources] = useState<ChatSource[]>([]);
   const [status, setStatus] = useState<"idle" | "loading" | "done" | "error">("idle");
   const [error, setError] = useState<string | null>(null);
+  const [askMode, setAskMode] = useState(false); // mode-choice popup before continuing to full chat
+  const [srcExpanded, setSrcExpanded] = useState(false); // sources show-more
+  const [saved, setSaved] = useState(false); // a brief is persisted for this concept
+  const [studyState, setStudyState] = useState<"idle" | "saving" | "done" | "error">("idle");
   // Bumped per request; an in-flight stream checks it before writing state, so a
   // late chunk can't land after the user re-asks. (Switching concepts remounts
   // this panel via its `key`, so per-concept reset is handled by React.)
@@ -57,14 +70,39 @@ export default function ConceptInspector({
     gen.current++;
   }, []);
 
-  // Escape closes the panel.
+  // Escape closes the mode popup first (if open), otherwise the panel.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onClose();
+      if (e.key !== "Escape") return;
+      if (askMode) setAskMode(false);
+      else onClose();
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [onClose]);
+  }, [onClose, askMode]);
+
+  // If this concept already has a saved story, load + show it instead of making
+  // the student regenerate. (Remounts per concept via `key`, so [] is correct.)
+  useEffect(() => {
+    if (!node.hasStory) return;
+    let live = true;
+    api
+      .get(`/v1/concepts/${conceptUuid(node.id)}/brief`, ConceptBriefSchema)
+      .then((b) => {
+        if (!live || !b.text.trim()) return;
+        setBrief(b.text);
+        setSources(b.sources);
+        setStatus("done");
+        setSaved(true);
+      })
+      .catch(() => {
+        /* fall back to the "Tell me more" button */
+      });
+    return () => {
+      live = false;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // Neighbours straight off the (unmutated) API graph — string endpoint ids, so
   // this stays stable regardless of what the force engine does to its own copy.
@@ -92,25 +130,42 @@ export default function ConceptInspector({
     setBrief("");
     setSources([]);
     try {
-      const res = await apiStream("/v1/chat", { message: conceptQuestion(node) });
+      // "open" mode: blend the student's notes with general AI knowledge — note
+      // pages cited (teal), general knowledge labeled 'ai' (taupe, tentative).
+      const res = await apiStream("/v1/chat", { message: conceptQuestion(node), mode: "open" });
       if (!res.ok) {
         const body = (await res.json().catch(() => ({}))) as { error?: string };
         throw new Error(body.error ?? `Couldn't reach entri (${res.status})`);
       }
-      let srcs: string[] = [];
+      let srcs: ChatSource[] = [];
       try {
-        srcs = JSON.parse(res.headers.get("X-Entri-Sources") ?? "[]");
+        const parsed = ChatSourceListSchema.safeParse(JSON.parse(res.headers.get("X-Entri-Sources") ?? "[]"));
+        if (parsed.success) srcs = parsed.data;
       } catch {
         srcs = [];
       }
       if (gen.current === myGen) setSources(srcs);
 
+      // Reconcile (strip fabricated citations, keep only used note chips), show the
+      // final brief, and persist it so it isn't regenerated and the node's story
+      // ring lights up. Best-effort save — the brief still shows if the POST fails.
+      const finalize = (rawText: string) => {
+        if (gen.current !== myGen) return;
+        const final = reconcileCitations(rawText, srcs);
+        setBrief(final.text);
+        setSources(final.sources);
+        setStatus("done");
+        setSaved(true);
+        api
+          .post(`/v1/concepts/${conceptUuid(node.id)}/brief`, { text: final.text, sources: final.sources })
+          .then(() => onStoried(node.id))
+          .catch(() => {
+            /* non-fatal: brief still shows, just not saved */
+          });
+      };
+
       if (!res.body) {
-        const text = await res.text();
-        if (gen.current === myGen) {
-          setBrief(text);
-          setStatus("done");
-        }
+        finalize(await res.text());
         return;
       }
       const reader = res.body.getReader();
@@ -123,7 +178,7 @@ export default function ConceptInspector({
         if (gen.current !== myGen) return; // concept switched — drop this stream
         setBrief(acc);
       }
-      if (gen.current === myGen) setStatus("done");
+      finalize(acc);
     } catch (e) {
       if (gen.current !== myGen) return;
       setError(e instanceof Error ? e.message : "Something went wrong");
@@ -131,9 +186,31 @@ export default function ConceptInspector({
     }
   }
 
+  // Promote this concept into a studyable card (origin 'inferred' → tentative in
+  // review) and seed its FSRS state. Idempotent server-side, so a re-tap is safe.
+  async function addToReviews() {
+    setStudyState("saving");
+    try {
+      await api.post(`/v1/concepts/${conceptUuid(node.id)}/study`);
+      setStudyState("done");
+    } catch {
+      setStudyState("error");
+    }
+  }
+
   const confidence = Math.round(node.confidence * 100);
+  // Split provenance: verified note pages (teal) vs general AI knowledge (taupe,
+  // tentative) — an AI answer must never read as if it came from the notes.
+  const aiSources = sources.filter((s) => s.kind === "ai");
+  const noteSources = sources.filter((s) => s.kind === "note");
+  // Sources sit at the bottom of the reply; note chips collapse past three behind
+  // a show-more toggle (mirrors the full chat's AssistantBubble).
+  const SRC_LIMIT = 3;
+  const shownNotes = srcExpanded ? noteSources : noteSources.slice(0, SRC_LIMIT);
+  const hiddenNotes = noteSources.length - shownNotes.length;
 
   return (
+    <>
     <aside
       role="dialog"
       aria-label={`Concept: ${node.label}`}
@@ -214,48 +291,156 @@ export default function ConceptInspector({
         </section>
       )}
 
-      {/* chat more — generate a grounded brief inline, or carry on in full chat */}
+      {/* chat more — notes first, then general AI knowledge; inline or in full chat */}
       <div className="mt-4 pt-3.5 border-t border-line">
         {status === "idle" ? (
-          <button onClick={tellMore} className="btn-p w-full text-[14px] py-2.5">
-            Tell me more
-          </button>
+          <>
+            <button onClick={tellMore} className="btn-p w-full text-[14px] py-2.5">
+              Tell me more
+            </button>
+            <p className="text-muted text-[11px] leading-snug mt-1.5">
+              Blends your notes with general AI knowledge — note pages cited, AI parts labeled. Saved so you don&apos;t regenerate it.
+            </p>
+          </>
+        ) : status === "error" ? (
+          <>
+            <p className="text-brick text-[13px] leading-[1.5]">{error}</p>
+            <button onClick={tellMore} className="mt-2 font-mono text-[11px] text-marigold-deep hover:underline cursor-pointer">
+              Try again
+            </button>
+          </>
         ) : (
-          <div className="inferred-card !py-3 !px-3.5">
-            <div className="kicker mb-1.5">From your notes</div>
-            {status === "error" ? (
-              <>
-                <p className="text-brick text-[13px] leading-[1.5]">{error}</p>
-                <button onClick={tellMore} className="mt-2 font-mono text-[11px] text-marigold-deep hover:underline cursor-pointer">
-                  Try again
-                </button>
-              </>
+          <>
+            {brief ? (
+              <div className="chat-md text-[13.5px] leading-[1.6] text-ink-soft">
+                <ReactMarkdown remarkPlugins={[remarkGfm]}>{brief}</ReactMarkdown>
+              </div>
             ) : (
-              <>
-                <p className="text-ink-soft text-[13.5px] leading-[1.6] whitespace-pre-wrap">
-                  {brief || <span className="text-muted">thinking…</span>}
-                </p>
-                {sources.length > 0 && (
-                  <div className="flex flex-wrap gap-1.5 mt-2.5">
-                    {sources.map((s) => (
-                      <span key={s} className="font-mono text-[10px] text-teal bg-teal-soft rounded-[3px] px-2 py-[3px]">
-                        <span aria-hidden="true">→</span> {s}
-                      </span>
-                    ))}
-                  </div>
-                )}
-              </>
+              <span className="text-muted text-[13px]">thinking…</span>
             )}
-          </div>
+            {(aiSources.length > 0 || noteSources.length > 0) && (
+              <div className="mt-2.5 pt-2.5 border-t border-line flex flex-wrap items-center gap-1.5">
+                {aiSources.map((s) => (
+                  <span key={s.label} className="chip-inferred" title="From general AI knowledge, not your notes">
+                    {s.label}
+                  </span>
+                ))}
+                {shownNotes.map((s) => (
+                  <span key={s.label} className="font-mono text-[10px] text-teal bg-teal-soft rounded-[3px] px-2 py-[3px]">
+                    <span aria-hidden="true">→</span> {s.label}
+                  </span>
+                ))}
+                {hiddenNotes > 0 && (
+                  <button
+                    type="button"
+                    onClick={() => setSrcExpanded(true)}
+                    className="font-mono text-[10px] text-marigold hover:text-marigold-deep cursor-pointer"
+                  >
+                    +{hiddenNotes} more
+                  </button>
+                )}
+                {srcExpanded && noteSources.length > SRC_LIMIT && (
+                  <button
+                    type="button"
+                    onClick={() => setSrcExpanded(false)}
+                    className="font-mono text-[10px] text-muted hover:text-ink-soft cursor-pointer"
+                  >
+                    show less
+                  </button>
+                )}
+              </div>
+            )}
+            {status === "done" && (
+              <div className="mt-2 flex items-center gap-2.5">
+                {saved && <span className="font-mono text-[10px] text-muted">✓ Saved</span>}
+                <button
+                  type="button"
+                  onClick={tellMore}
+                  className="font-mono text-[10px] text-muted hover:text-ink-soft cursor-pointer"
+                >
+                  ↻ Regenerate
+                </button>
+              </div>
+            )}
+          </>
         )}
 
-        <Link
-          href={`/chat?q=${encodeURIComponent(conceptQuestion(node))}`}
-          className="mt-2.5 inline-flex items-center gap-1 font-mono text-[11px] text-marigold-deep hover:underline"
-        >
-          Continue in chat <span aria-hidden="true">↗</span>
-        </Link>
+        {/* actions — continue the thread, or turn this into a study card */}
+        <div className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-1.5">
+          <button
+            type="button"
+            onClick={() => setAskMode(true)}
+            className="inline-flex items-center gap-1 font-mono text-[11px] text-marigold-deep hover:underline cursor-pointer"
+          >
+            Continue in chat <span aria-hidden="true">↗</span>
+          </button>
+
+          {(status === "done" || node.description) &&
+            (studyState === "done" ? (
+              <span className="font-mono text-[11px] text-teal">✓ In your reviews</span>
+            ) : (
+              <button
+                type="button"
+                onClick={addToReviews}
+                disabled={studyState === "saving"}
+                className="inline-flex items-center gap-1 font-mono text-[11px] text-marigold-deep hover:underline cursor-pointer disabled:opacity-50 disabled:cursor-default"
+              >
+                {studyState === "saving"
+                  ? "Adding…"
+                  : studyState === "error"
+                    ? "Couldn’t add — retry"
+                    : "+ Add to my reviews"}
+              </button>
+            ))}
+        </div>
       </div>
     </aside>
+
+      {/* "Continue in chat" mode chooser — pick what entri draws on, then carry the
+          choice to /chat via ?mode= so the seeded answer isn't stuck on notes-only. */}
+      {askMode && (
+        <div
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="ask-mode-title"
+          onClick={() => setAskMode(false)}
+          className="fixed inset-0 z-[60] grid place-items-center p-4 bg-[color-mix(in_srgb,var(--ink)_28%,transparent)] backdrop-blur-[2px]"
+        >
+          <div onClick={(e) => e.stopPropagation()} className="card-swap card max-w-[400px] w-full px-5 py-4">
+            <div className="kicker mb-1">Continue in chat</div>
+            <h2 id="ask-mode-title" className="font-display text-[19px] leading-snug mb-1.5 break-words">
+              How should entri answer about “{node.label}”?
+            </h2>
+            <p className="text-ink-soft text-[13.5px] leading-[1.55] mb-3.5">
+              Pick what entri draws on — more context usually means a fuller, more useful answer.
+            </p>
+            <div className="flex flex-col gap-2">
+              <Link
+                href={`/chat?q=${encodeURIComponent(conceptQuestion(node))}&mode=open`}
+                className="card px-4 py-3 hover:border-marigold transition-colors"
+              >
+                <div className="flex items-center gap-2">
+                  <span className="font-semibold text-[14px] text-ink">Notes + AI</span>
+                  <span className="font-mono text-[9.5px] uppercase tracking-[0.08em] text-marigold-deep">Recommended</span>
+                </div>
+                <p className="text-muted text-[12px] mt-0.5">Your notes plus general AI knowledge — broader context; AI parts are labeled.</p>
+              </Link>
+              <Link
+                href={`/chat?q=${encodeURIComponent(conceptQuestion(node))}&mode=notes`}
+                className="card px-4 py-3 hover:border-marigold transition-colors"
+              >
+                <span className="font-semibold text-[14px] text-ink">My notes only</span>
+                <p className="text-muted text-[12px] mt-0.5">Strictly your own material, with the page cited.</p>
+              </Link>
+            </div>
+            <div className="flex justify-end mt-3.5">
+              <button onClick={() => setAskMode(false)} className="btn-ghost text-[13px] px-3 py-1.5">
+                Cancel
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </>
   );
 }

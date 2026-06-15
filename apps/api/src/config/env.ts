@@ -31,6 +31,14 @@ const schema = z.object({
   CLOUDFLARE_ACCOUNT_ID: z.string().optional(),
   CLOUDFLARE_API_TOKEN: z.string().optional(),
 
+  // RAG grounding thresholds (cosine similarity, 0..1) for strict "notes" mode:
+  // they decide whether the notes cover a question or it must refuse. bge clusters
+  // tightly and HIGH, so the floor runs high to tell real coverage from bge's
+  // elevated baseline. ("Notes + AI" mode always answers + blends general knowledge,
+  // independent of these.) Tune against the per-request `[chat]` score logs.
+  GROUNDING_FLOOR: z.coerce.number().min(0).max(1).default(0.6),
+  GROUNDING_STRONG: z.coerce.number().min(0).max(1).default(0.7),
+
   // Sarvam — handwriting OCR (optional).
   SARVAM_API_KEY: z.string().optional(),
   SARVAM_OCR_LANGUAGE: z.string().default("en-IN"),

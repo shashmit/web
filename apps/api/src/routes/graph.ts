@@ -23,7 +23,7 @@ graph.get("/", async (c) => {
 
   const concepts = conceptIds.size
     ? (orThrow(
-        await db.database.from("concepts").select("id, label, topic, origin, confidence, description").in("id", [...conceptIds])
+        await db.database.from("concepts").select("id, label, topic, origin, confidence, description, brief_at").in("id", [...conceptIds])
       ) as ConceptRow[])
     : [];
   // cards filtered to live (non-deleted) notes — defense-in-depth alongside the

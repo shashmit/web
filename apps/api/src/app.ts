@@ -16,6 +16,7 @@ import { capture } from "./routes/capture.js";
 import { chat } from "./routes/chat.js";
 import { share } from "./routes/share.js";
 import { graph } from "./routes/graph.js";
+import { concepts } from "./routes/concepts.js";
 import { internal } from "./routes/internal.js";
 
 // The assembled Hono app: global middleware, public + authed route mounts, and
@@ -55,6 +56,7 @@ v1.route("/streak", streak);
 v1.route("/capture", capture);
 v1.route("/chat", chat);
 v1.route("/graph", graph);
+v1.route("/concepts", concepts);
 app.route("/v1", v1);
 
 app.onError(errorHandler);

@@ -27,6 +27,7 @@ export default function ForceGraph({
   onNavigate,
   onSelect,
   selectedId,
+  storiedIds,
   topInset = 0,
 }: {
   graph: Graph;
@@ -37,6 +38,9 @@ export default function ForceGraph({
   onSelect?: (node: GraphNode | null) => void;
   // id of the currently-inspected node, drawn with a focus ring for feedback.
   selectedId?: string | null;
+  // concept node ids that have a saved "Tell me more" brief — drawn with a warm
+  // highlighter ring so the student can see which concepts hold a story.
+  storiedIds?: Set<string>;
   // px reserved at the top for an overlay (the Map page's title band) so the fit
   // never parks nodes underneath it.
   topInset?: number;
@@ -216,6 +220,18 @@ export default function ForceGraph({
               ctx.fillRect(x - tw / 2 - 2 / scale, ty - 1 / scale, tw + 4 / scale, fontPx + 2 / scale);
               ctx.fillStyle = n.kind === "concept" ? theme.taupeInk : theme.ink;
               ctx.fillText(text, x, ty);
+            }
+
+            // "Has a saved story" ring — a warm highlighter halo on concepts the
+            // student has generated a brief for. A static ring, not a blink:
+            // DESIGN.md keeps motion intentional, and the canvas only repaints
+            // while the simulation is warm (a blink would need a render loop).
+            if (n.kind === "concept" && storiedIds?.has(n.id)) {
+              ctx.beginPath();
+              ctx.arc(x, y, r + 2.2 / scale, 0, 2 * Math.PI);
+              ctx.lineWidth = 2 / scale;
+              ctx.strokeStyle = theme.hi;
+              ctx.stroke();
             }
 
             // Focus ring on the node whose inspector is open — a marigold halo

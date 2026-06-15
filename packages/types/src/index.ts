@@ -172,6 +172,7 @@ export const GraphNodeSchema = z.object({
   origin: CardOriginSchema, // 'inferred' concepts render tentative
   confidence: z.number().min(0).max(1),
   degree: z.number().int().nonnegative(), // computed at read -> node size / label priority
+  hasStory: z.boolean(), // concept -> a saved "Tell me more" brief exists (graph ring); false for cards
 });
 export type GraphNode = z.infer<typeof GraphNodeSchema>;
 
@@ -199,10 +200,19 @@ export type Graph = z.infer<typeof GraphSchema>;
 export const ChatModeSchema = z.enum(["notes", "open"]);
 export type ChatMode = z.infer<typeof ChatModeSchema>;
 
+/** One prior turn, sent so chat can be multi-turn (the model sees the thread,
+ * not just the latest message). Retrieval still keys off the newest message. */
+export const ChatTurnSchema = z.object({
+  role: z.enum(["user", "assistant"]),
+  content: z.string(),
+});
+export type ChatTurn = z.infer<typeof ChatTurnSchema>;
+
 /** POST /v1/chat body */
 export const ChatRequestSchema = z.object({
   message: z.string().trim().min(1, "empty message"),
   mode: ChatModeSchema.optional().default("notes"),
+  history: z.array(ChatTurnSchema).max(20).optional().default([]),
 });
 export type ChatRequest = z.infer<typeof ChatRequestSchema>;
 
@@ -213,9 +223,35 @@ export type ChatRequest = z.infer<typeof ChatRequestSchema>;
 export const ChatSourceSchema = z.object({
   label: z.string(),
   kind: z.enum(["note", "ai"]),
+  /** For `note` sources: the actual snippet the answer drew on (truncated),
+   * revealed under "show more" so a citation can be inspected, not just named. */
+  snippet: z.string().optional(),
 });
 export type ChatSource = z.infer<typeof ChatSourceSchema>;
 export const ChatSourceListSchema = z.array(ChatSourceSchema);
+
+/** Sentinel the model emits after its answer in "Notes + AI" mode, followed by
+ * suggested follow-up questions (one per line). The API instructs the model to
+ * print it; the web client splits on it so the marker + follow-ups never render
+ * in the answer body — they become tappable prompts under the answer instead. */
+export const CHAT_FOLLOWUP_MARKER = "§FOLLOWUPS§";
+
+/** GET /v1/concepts/:id/brief — a saved "Tell me more" brief for a concept,
+ * generated on the map and persisted so it isn't regenerated (and so the node
+ * can show a "has a story" ring). Empty `text` = no brief saved yet. */
+export const ConceptBriefSchema = z.object({
+  text: z.string(),
+  sources: ChatSourceListSchema,
+  savedAt: z.string().nullable(),
+});
+export type ConceptBrief = z.infer<typeof ConceptBriefSchema>;
+
+/** POST /v1/concepts/:id/brief body. */
+export const ConceptBriefSaveSchema = z.object({
+  text: z.string().trim().min(1, "empty brief"),
+  sources: ChatSourceListSchema.optional().default([]),
+});
+export type ConceptBriefSave = z.infer<typeof ConceptBriefSaveSchema>;
 
 /** GET /v1/chat/suggestions — LLM-generated prompts drawn from the user's own
  * cards, so each one is answerable by the grounded chat. `topic` is an optional

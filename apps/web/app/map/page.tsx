@@ -3,7 +3,7 @@
 import dynamic from "next/dynamic";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useGet } from "@/lib/use-api";
 import { GraphSchema, type Graph, type GraphNode } from "@/lib/api-types";
 import ConceptInspector from "./ConceptInspector";
@@ -47,6 +47,18 @@ export default function MapPage() {
   // a reset effect (and without a stale node lingering on screen).
   const [selected, setSelected] = useState<GraphNode | null>(null);
   const liveSelected = selected && data?.nodes.some((n) => n.id === selected.id) ? selected : null;
+
+  // Concept ids that have a saved "Tell me more" brief → drawn with the warm
+  // story ring. Seeded from the loaded graph (hasStory), plus any saved this
+  // session so a freshly-generated brief lights up its node without a refetch.
+  const [newlyStoried, setNewlyStoried] = useState<Set<string>>(() => new Set());
+  const storiedIds = useMemo(() => {
+    const s = new Set<string>(newlyStoried);
+    data?.nodes.forEach((n) => {
+      if (n.kind === "concept" && n.hasStory) s.add(n.id);
+    });
+    return s;
+  }, [data, newlyStoried]);
 
   // Reserve the overlay header's real height so the graph fit never parks nodes
   // behind the title band (measured live; it shrinks on mobile where the blurb hides).
@@ -99,6 +111,7 @@ export default function MapPage() {
               onNavigate={open}
               onSelect={setSelected}
               selectedId={liveSelected?.id ?? null}
+              storiedIds={storiedIds}
               topInset={inset}
             />
           )
@@ -113,6 +126,7 @@ export default function MapPage() {
           onClose={() => setSelected(null)}
           onPick={setSelected}
           onNavigate={open}
+          onStoried={(id) => setNewlyStoried((prev) => (prev.has(id) ? prev : new Set(prev).add(id)))}
         />
       )}
 

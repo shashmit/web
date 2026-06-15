@@ -24,6 +24,8 @@ export type {
   ChatSuggestion,
   ChatMode,
   ChatSource,
+  ChatTurn,
+  ConceptBrief,
 } from "@entri/types";
 export {
   ProfileSchema,
@@ -41,6 +43,8 @@ export {
   GraphSchema,
   ChatSuggestionListSchema,
   ChatSourceListSchema,
+  ConceptBriefSchema,
+  CHAT_FOLLOWUP_MARKER,
 } from "@entri/types";
 
 export function daysUntil(date: string | null): number | null {
