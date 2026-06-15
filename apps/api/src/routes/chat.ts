@@ -1,10 +1,35 @@
 import { Hono } from "hono";
 import { embedMany, streamText } from "ai";
-import { ChatRequestSchema } from "@entri/types";
+import { ChatRequestSchema, type ChatSuggestion } from "@entri/types";
 import type { AppEnv } from "../middleware/auth.js";
-import { aiConfigured, embedModel, chatModel, EMBED_MODEL } from "../lib/ai.js";
+import { aiConfigured, chatConfigured, embedModel, chatModel, EMBED_MODEL } from "../lib/ai.js";
+import { regenerateSuggestions } from "../services/suggestions.js";
 
 export const chat = new Hono<AppEnv>();
+
+// GET /v1/chat/suggestions — starter prompts drawn from the user's OWN cards, so
+// each is answerable by the grounded chat below. Served from the chat_suggestions
+// cache (refreshed by the ingest worker on every new note); generated lazily on
+// first visit for users who captured before this shipped. Empty array degrades
+// gracefully (the UI shows a hint instead of misleading generic prompts).
+chat.get("/suggestions", async (c) => {
+  const db = c.get("db");
+  const cached = await db.database
+    .from("chat_suggestions")
+    .select("question, topic")
+    .order("rank", { ascending: true });
+  if (cached.error) throw cached.error;
+  const rows = (cached.data ?? []) as ChatSuggestion[];
+  if (rows.length > 0) return c.json(rows);
+
+  if (!chatConfigured()) return c.json([] as ChatSuggestion[]);
+  try {
+    return c.json(await regenerateSuggestions(c.get("userId")));
+  } catch (e) {
+    console.error("[chat] suggestion generation failed", e instanceof Error ? e.message : e);
+    return c.json([] as ChatSuggestion[]);
+  }
+});
 
 type Chunk = { item_id: string; content: string; source_ref: string | null; similarity: number };
 

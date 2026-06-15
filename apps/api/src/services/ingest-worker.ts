@@ -4,6 +4,7 @@ import { aiConfigured, extractionConfigured, embedModel, EMBED_MODEL } from "../
 import { structureNotes } from "./extract.js";
 import { ocr, type OcrFile } from "../lib/sarvam.js";
 import { extractGraph, writeConceptGraph, buildSimilarityEdges, type GraphCard } from "./graph.js";
+import { regenerateSuggestions } from "./suggestions.js";
 import { newCard } from "./fsrs.js";
 
 const BUCKET = "note-images";
@@ -285,4 +286,13 @@ async function processIngest(job: Job) {
     .from("notes")
     .update({ status: "extracted", topic: extraction.topic, title })
     .eq("id", noteId);
+
+  // Refresh the "Ask your notes" starter prompts now that this user has new
+  // material. Fail-soft and gated — cards/embeddings already landed, so a flaky
+  // suggestion pass must never fail the ingest.
+  try {
+    await regenerateSuggestions(userId);
+  } catch (e) {
+    console.error("[worker] suggestion refresh failed (non-fatal)", e instanceof Error ? e.message : e);
+  }
 }

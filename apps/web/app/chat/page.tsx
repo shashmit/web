@@ -2,13 +2,10 @@
 
 import { useRef, useState } from "react";
 import { apiStream } from "@/lib/api";
+import { useGet } from "@/lib/use-api";
+import { ChatSuggestionListSchema, type ChatSuggestion } from "@/lib/api-types";
 
 type Msg = { role: "you" | "ai"; text: string; sources?: string[] };
-
-const SUGGESTIONS = [
-  "Why does centripetal force increase when the radius shrinks?",
-  "Summarise the first law of thermodynamics from my notes.",
-];
 
 export default function Chat() {
   const [messages, setMessages] = useState<Msg[]>([]);
@@ -16,6 +13,14 @@ export default function Chat() {
   const [busy, setBusy] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
   const taRef = useRef<HTMLTextAreaElement>(null);
+
+  // Starter prompts drawn from the user's own cards (LLM-generated, cached
+  // server-side and refreshed when new notes land). Each is answerable by the
+  // grounded chat, so tapping one never hits the "not in your notes" refusal.
+  const { data: suggestions, loading: loadingSuggestions } = useGet<ChatSuggestion[]>(
+    "/v1/chat/suggestions",
+    ChatSuggestionListSchema
+  );
 
   // Grow the textarea with its content, up to a cap (then it scrolls).
   function autosize(el: HTMLTextAreaElement) {
@@ -78,15 +83,38 @@ export default function Chat() {
       <div ref={scrollRef} className="flex-1 overflow-y-auto flex flex-col gap-3 pb-3">
         {messages.length === 0 ? (
           <div className="flex flex-col gap-2 mt-2">
-            {SUGGESTIONS.map((s) => (
-              <button
-                key={s}
-                onClick={() => send(s)}
-                className="text-left card px-4 py-3 text-[13.5px] text-ink-soft hover:border-marigold transition-colors"
-              >
-                {s}
-              </button>
-            ))}
+            <p className="font-mono text-[11px] uppercase tracking-[0.08em] text-muted px-0.5 mb-0.5">
+              Drawn from your notes
+            </p>
+            {loadingSuggestions ? (
+              [0, 1, 2, 3].map((i) => (
+                <div key={i} className="card px-4 py-3.5 animate-pulse" aria-hidden="true">
+                  <div className="h-3 rounded-[3px] bg-line" style={{ width: `${78 - i * 9}%` }} />
+                </div>
+              ))
+            ) : suggestions && suggestions.length > 0 ? (
+              suggestions.map((s) => (
+                <button
+                  key={s.question}
+                  onClick={() => send(s.question)}
+                  className="group text-left card px-4 py-3 text-[13.5px] text-ink-soft hover:border-marigold transition-colors flex items-center gap-2.5"
+                >
+                  <span aria-hidden="true" className="shrink-0 font-mono text-[13px] text-marigold">
+                    →
+                  </span>
+                  <span className="flex-1">{s.question}</span>
+                  {s.topic && (
+                    <span className="hidden sm:inline shrink-0 font-mono text-[10px] text-muted">
+                      {s.topic}
+                    </span>
+                  )}
+                </button>
+              ))
+            ) : (
+              <p className="text-muted text-[13px] px-0.5 leading-relaxed">
+                Capture a note and entri will suggest questions drawn from your own material.
+              </p>
+            )}
           </div>
         ) : (
           messages.map((m, i) =>

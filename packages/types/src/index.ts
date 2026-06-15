@@ -184,6 +184,16 @@ export const ChatRequestSchema = z.object({
 });
 export type ChatRequest = z.infer<typeof ChatRequestSchema>;
 
+/** GET /v1/chat/suggestions — LLM-generated prompts drawn from the user's own
+ * cards, so each one is answerable by the grounded chat. `topic` is an optional
+ * label for grouping/affordance in the UI. */
+export const ChatSuggestionSchema = z.object({
+  question: z.string(),
+  topic: z.string().nullable(),
+});
+export type ChatSuggestion = z.infer<typeof ChatSuggestionSchema>;
+export const ChatSuggestionListSchema = z.array(ChatSuggestionSchema);
+
 /** PATCH /v1/me body — every field optional; unknown keys are stripped. */
 export const ProfilePatchSchema = z.object({
   display_name: z.string().nullable().optional(),

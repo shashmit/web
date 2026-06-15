@@ -19,6 +19,7 @@ export type {
   Graph,
   GraphNode,
   GraphEdge,
+  ChatSuggestion,
 } from "@entri/types";
 export {
   ProfileSchema,
@@ -31,6 +32,7 @@ export {
   NoteDetailSchema,
   SharedNoteSchema,
   GraphSchema,
+  ChatSuggestionListSchema,
 } from "@entri/types";
 
 export function daysUntil(date: string | null): number | null {
