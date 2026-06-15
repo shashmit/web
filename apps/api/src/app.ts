@@ -56,3 +56,8 @@ v1.route("/graph", graph);
 app.route("/v1", v1);
 
 app.onError(errorHandler);
+
+// Vercel's Hono framework preset uses this file as the function entry and invokes
+// the DEFAULT export (a Hono app is a fetch handler). index.ts keeps importing the
+// named `app` for the local long-running server.
+export default app;
