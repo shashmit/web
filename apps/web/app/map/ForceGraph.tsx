@@ -25,11 +25,18 @@ const esc = (s: string) =>
 export default function ForceGraph({
   graph,
   onNavigate,
+  onSelect,
+  selectedId,
   topInset = 0,
 }: {
   graph: Graph;
   // card -> (noteId, cardId) so the caller can deep-link to that exact question.
   onNavigate?: (noteId: string, cardId?: string) => void;
+  // concept clicked -> open the inspector panel for it (null = background click,
+  // deselect). When omitted (e.g. the note MiniMap), concept clicks zoom instead.
+  onSelect?: (node: GraphNode | null) => void;
+  // id of the currently-inspected node, drawn with a focus ring for feedback.
+  selectedId?: string | null;
   // px reserved at the top for an overlay (the Map page's title band) so the fit
   // never parks nodes underneath it.
   topInset?: number;
@@ -166,7 +173,8 @@ export default function ForceGraph({
               return `<div><div class="gt-q">${esc(n.label || "(card)")}</div>${a}<div class="gt-k">card · click to open</div></div>`;
             }
             const sub = n.topic ? ` · ${esc(n.topic)}` : "";
-            return `<div><div class="gt-q gt-concept">${esc(n.label)}</div><div class="gt-k">AI-inferred concept${sub}</div></div>`;
+            const gloss = n.description ? `<div class="gt-a">${esc(n.description)}</div>` : "";
+            return `<div><div class="gt-q gt-concept">${esc(n.label)}</div>${gloss}<div class="gt-k">AI-inferred concept${sub} · click to explore</div></div>`;
           }}
           nodeCanvasObjectMode={() => "replace"}
           nodeCanvasObject={(node, ctx, scale) => {
@@ -209,6 +217,16 @@ export default function ForceGraph({
               ctx.fillStyle = n.kind === "concept" ? theme.taupeInk : theme.ink;
               ctx.fillText(text, x, ty);
             }
+
+            // Focus ring on the node whose inspector is open — a marigold halo
+            // (the signature accent) so the selection reads at any zoom.
+            if (selectedId && n.id === selectedId) {
+              ctx.beginPath();
+              ctx.arc(x, y, r + 3.5 / scale, 0, 2 * Math.PI);
+              ctx.lineWidth = 1.5 / scale;
+              ctx.strokeStyle = theme.marigoldDeep;
+              ctx.stroke();
+            }
           }}
           nodePointerAreaPaint={(node, color, ctx) => {
             const n = node as GNode;
@@ -231,11 +249,14 @@ export default function ForceGraph({
             const n = node as GNode;
             if (n.kind === "card" && n.noteId && onNavigate) {
               onNavigate(n.noteId, n.id.startsWith("card:") ? n.id.slice("card:".length) : undefined);
+            } else if (n.kind === "concept" && onSelect) {
+              onSelect(n);
             } else if (fgRef.current && n.x != null && n.y != null) {
               fgRef.current.centerAt(n.x, n.y, 500);
               fgRef.current.zoom(2.4, 500);
             }
           }}
+          onBackgroundClick={() => onSelect?.(null)}
         />
       )}
     </div>

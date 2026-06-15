@@ -1,18 +1,44 @@
 "use client";
 
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 import { apiStream } from "@/lib/api";
 import { useGet } from "@/lib/use-api";
-import { ChatSuggestionListSchema, type ChatSuggestion } from "@/lib/api-types";
+import {
+  ChatSuggestionListSchema,
+  ChatSourceListSchema,
+  type ChatSuggestion,
+  type ChatSource,
+  type ChatMode,
+} from "@/lib/api-types";
 
-type Msg = { role: "you" | "ai"; text: string; sources?: string[] };
+type Msg = { role: "you" | "ai"; text: string; sources?: ChatSource[] };
 
 export default function Chat() {
   const [messages, setMessages] = useState<Msg[]>([]);
   const [input, setInput] = useState("");
   const [busy, setBusy] = useState(false);
+  // Answer mode: "notes" stays strictly grounded in the user's own material;
+  // "open" lets the assistant answer from general AI knowledge when the notes
+  // don't cover it (clearly labeled). Persisted so the choice sticks.
+  const [mode, setMode] = useState<ChatMode>("notes");
   const scrollRef = useRef<HTMLDivElement>(null);
   const taRef = useRef<HTMLTextAreaElement>(null);
+
+  useEffect(() => {
+    const saved = localStorage.getItem("entri-chat-mode");
+    if (saved === "open" || saved === "notes") setMode(saved);
+  }, []);
+
+  function changeMode(m: ChatMode) {
+    setMode(m);
+    try {
+      localStorage.setItem("entri-chat-mode", m);
+    } catch {
+      /* private mode / quota — non-fatal */
+    }
+  }
 
   // Starter prompts drawn from the user's own cards (LLM-generated, cached
   // server-side and refreshed when new notes land). Each is answerable by the
@@ -21,6 +47,21 @@ export default function Chat() {
     "/v1/chat/suggestions",
     ChatSuggestionListSchema
   );
+
+  // Seeded from the knowledge map: "Continue in chat ↗" on a concept opens
+  // /chat?q=… — ask it once on arrival, then strip the param so a refresh or
+  // back-nav doesn't re-fire it. Guarded by a ref to survive StrictMode remounts.
+  const seeded = useRef(false);
+  useEffect(() => {
+    if (seeded.current) return;
+    seeded.current = true;
+    const q = new URLSearchParams(window.location.search).get("q");
+    if (q?.trim()) {
+      send(q);
+      window.history.replaceState(null, "", window.location.pathname);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // Grow the textarea with its content, up to a cap (then it scrolls).
   function autosize(el: HTMLTextAreaElement) {
@@ -37,10 +78,11 @@ export default function Chat() {
     setMessages((m) => [...m, { role: "you", text: q }, { role: "ai", text: "" }]);
 
     try {
-      const res = await apiStream("/v1/chat", { message: q });
-      let sources: string[] = [];
+      const res = await apiStream("/v1/chat", { message: q, mode });
+      let sources: ChatSource[] = [];
       try {
-        sources = JSON.parse(res.headers.get("X-Entri-Sources") ?? "[]");
+        const parsed = ChatSourceListSchema.safeParse(JSON.parse(res.headers.get("X-Entri-Sources") ?? "[]"));
+        if (parsed.success) sources = parsed.data;
       } catch {
         sources = [];
       }
@@ -70,14 +112,18 @@ export default function Chat() {
 
   return (
     <div className="max-w-[680px] w-full mx-auto flex flex-col h-[calc(100dvh-110px)] md:h-[calc(100dvh-60px)]">
-      <div className="mb-4 px-0.5">
-        <h1 className="font-display font-semibold text-[clamp(24px,5.5vw,30px)] tracking-tight leading-[1.1]">
-          Ask your notes.
-        </h1>
-        <p className="text-muted text-[13px] mt-1">
-          Answers come only from your own material, with the page cited. If it&apos;s not in your
-          notes, it says so.
-        </p>
+      <div className="mb-4 px-0.5 flex items-start justify-between gap-3 flex-wrap">
+        <div>
+          <h1 className="font-display font-semibold text-[clamp(24px,5.5vw,30px)] tracking-tight leading-[1.1]">
+            Ask your notes.
+          </h1>
+          <p className="text-muted text-[13px] mt-1 max-w-[46ch]">
+            {mode === "notes"
+              ? "Answers come only from your own material, with the page cited. If it’s not in your notes, it says so."
+              : "Your notes first — and when they don’t cover it, entri answers from general AI knowledge, clearly labeled."}
+          </p>
+        </div>
+        <ModeToggle mode={mode} onChange={changeMode} />
       </div>
 
       <div ref={scrollRef} className="flex-1 overflow-y-auto flex flex-col gap-3 pb-3">
@@ -119,22 +165,14 @@ export default function Chat() {
         ) : (
           messages.map((m, i) =>
             m.role === "you" ? (
-              <div key={i} className="self-end max-w-[80%] bg-ink text-paper rounded-md rounded-br-sm px-4 py-2.5 text-[14.5px]">
+              <div
+                key={i}
+                className="self-end max-w-[80%] bg-ink text-paper rounded-md rounded-br-sm px-4 py-2.5 text-[14.5px]"
+              >
                 {m.text}
               </div>
             ) : (
-              <div key={i} className="self-start max-w-[88%] card px-4 py-3 text-[14.5px] leading-[1.6] text-ink-soft whitespace-pre-wrap">
-                {m.text || <span className="text-muted">…</span>}
-                {m.sources && m.sources.length > 0 && (
-                  <div className="flex flex-wrap gap-1.5 mt-2.5">
-                    {m.sources.map((s) => (
-                      <span key={s} className="font-mono text-[10px] text-teal bg-teal-soft rounded-[3px] px-2 py-[3px]">
-                        <span aria-hidden="true">→</span> {s}
-                      </span>
-                    ))}
-                  </div>
-                )}
-              </div>
+              <AssistantBubble key={i} text={m.text} sources={m.sources} />
             )
           )
         )}
@@ -153,7 +191,7 @@ export default function Chat() {
             rows={1}
             className="composer-field flex-1 bg-transparent border-0 resize-none outline-none text-[15px] leading-[1.5] text-ink placeholder:text-muted px-2 py-1.5 max-h-40 overflow-y-auto"
             aria-label="Ask about your notes"
-            placeholder="Ask about your notes…"
+            placeholder={mode === "notes" ? "Ask about your notes…" : "Ask anything — notes first, then AI…"}
             value={input}
             onChange={(e) => {
               setInput(e.target.value);
@@ -177,14 +215,111 @@ export default function Chat() {
           </button>
         </div>
         <p className="text-center text-muted text-[11px] mt-2">
-          Answers are grounded in your own notes — entri won&apos;t invent facts.
+          {mode === "notes"
+            ? "Answers are grounded in your own notes — entri won’t invent facts."
+            : "“Notes + AI” on — answers beyond your notes are labeled General AI knowledge."}
         </p>
       </form>
     </div>
   );
 }
 
-function updateLast(msgs: Msg[], text: string, sources: string[]): Msg[] {
+// Notes-only ↔ Notes + AI segmented toggle. Square, warm-lined, no pills.
+function ModeToggle({ mode, onChange }: { mode: ChatMode; onChange: (m: ChatMode) => void }) {
+  const options: [ChatMode, string][] = [
+    ["notes", "My notes"],
+    ["open", "Notes + AI"],
+  ];
+  return (
+    <div
+      role="radiogroup"
+      aria-label="Answer mode"
+      className="inline-flex shrink-0 rounded-sm border border-line bg-paper2 p-0.5 text-[12px] font-medium"
+    >
+      {options.map(([val, label]) => {
+        const active = mode === val;
+        return (
+          <button
+            key={val}
+            type="button"
+            role="radio"
+            aria-checked={active}
+            onClick={() => onChange(val)}
+            className={`rounded-[3px] px-2.5 py-1 transition-colors cursor-pointer ${
+              active ? "bg-ink text-paper" : "text-muted hover:text-ink-soft"
+            }`}
+          >
+            {label}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+// One assistant reply: Markdown-rendered body + a provenance footer. Note pages
+// are teal (verified, from your material); a general-AI answer wears the dashed
+// taupe "inferred" chip so it's never mistaken for the user's notes. Note chips
+// collapse past three behind a "show more".
+function AssistantBubble({ text, sources }: { text: string; sources?: ChatSource[] }) {
+  const [expanded, setExpanded] = useState(false);
+  const all = sources ?? [];
+  const ai = all.filter((s) => s.kind === "ai");
+  const notes = all.filter((s) => s.kind === "note");
+  const LIMIT = 3;
+  const shownNotes = expanded ? notes : notes.slice(0, LIMIT);
+  const hidden = notes.length - shownNotes.length;
+
+  return (
+    <div className="self-start max-w-[88%] card px-4 py-3 text-[14.5px] leading-[1.6] text-ink-soft">
+      {text ? (
+        <div className="chat-md">
+          <ReactMarkdown remarkPlugins={[remarkGfm]}>{text}</ReactMarkdown>
+        </div>
+      ) : (
+        <span className="text-muted">…</span>
+      )}
+
+      {(ai.length > 0 || notes.length > 0) && (
+        <div className="mt-2.5 pt-2.5 border-t border-line flex flex-wrap items-center gap-1.5">
+          {ai.map((s) => (
+            <span key={s.label} className="chip-inferred" title="Answered from general AI knowledge, not your notes">
+              {s.label}
+            </span>
+          ))}
+          {shownNotes.map((s) => (
+            <span
+              key={s.label}
+              className="font-mono text-[10px] text-teal bg-teal-soft rounded-[3px] px-2 py-[3px]"
+            >
+              <span aria-hidden="true">→</span> {s.label}
+            </span>
+          ))}
+          {hidden > 0 && (
+            <button
+              type="button"
+              onClick={() => setExpanded(true)}
+              className="font-mono text-[10px] text-marigold hover:text-marigold-deep cursor-pointer"
+            >
+              +{hidden} more
+            </button>
+          )}
+          {expanded && notes.length > LIMIT && (
+            <button
+              type="button"
+              onClick={() => setExpanded(false)}
+              className="font-mono text-[10px] text-muted hover:text-ink-soft cursor-pointer"
+            >
+              show less
+            </button>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function updateLast(msgs: Msg[], text: string, sources: ChatSource[]): Msg[] {
   const copy = [...msgs];
   for (let i = copy.length - 1; i >= 0; i--) {
     if (copy[i].role === "ai") {

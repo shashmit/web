@@ -157,7 +157,7 @@ notes.get("/:id/graph", async (c) => {
 
   const concepts = conceptIds.size
     ? (orThrow(
-        await db.database.from("concepts").select("id, label, topic, origin, confidence").in("id", [...conceptIds])
+        await db.database.from("concepts").select("id, label, topic, origin, confidence, description").in("id", [...conceptIds])
       ) as ConceptRow[])
     : [];
   const cards = cardIds.size

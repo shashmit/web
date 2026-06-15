@@ -5,7 +5,7 @@ import { usePathname, useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
 import { useAuth } from "@/lib/auth";
 import { useGet } from "@/lib/use-api";
-import { daysUntil, ProfileSchema, type Profile } from "@/lib/api-types";
+import { daysUntil, nextExam, ExamListSchema, type Exam } from "@/lib/api-types";
 
 /* ---------- icons (stroke, 1.8px — quiet, not cartoonish) ---------- */
 const ic = {
@@ -90,8 +90,8 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
   const router = useRouter();
   const { user, loading } = useAuth();
-  const profile = useGet<Profile>(user ? "/v1/me" : null, ProfileSchema);
-  const days = daysUntil(profile.data?.exam_date ?? null);
+  const exams = useGet<Exam[]>(user ? "/v1/exams" : null, ExamListSchema);
+  const days = daysUntil(nextExam(exams.data)?.exam_date ?? null);
   const active = (href: string) => pathname.startsWith(href);
 
   // Desktop sidebar collapse, persisted. Starts expanded on the server/first

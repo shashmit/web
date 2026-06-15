@@ -9,16 +9,30 @@ import { z } from "zod";
 
 // ───────────────────────── responses ─────────────────────────
 
-/** GET /v1/me, PATCH /v1/me */
+/** GET /v1/me, PATCH /v1/me — exams now live in their own table (GET /v1/exams). */
 export const ProfileSchema = z.object({
   user_id: z.string(),
   display_name: z.string().nullable(),
-  exam_name: z.string().nullable(),
-  exam_date: z.string().nullable(),
   timezone: z.string(),
   study_hour_local: z.number(),
 });
 export type Profile = z.infer<typeof ProfileSchema>;
+
+/** GET /v1/exams — a student's tracked exams, soonest first. */
+export const ExamSchema = z.object({
+  id: z.string(),
+  name: z.string(),
+  exam_date: z.string(), // ISO date (YYYY-MM-DD)
+});
+export type Exam = z.infer<typeof ExamSchema>;
+export const ExamListSchema = z.array(ExamSchema);
+
+/** POST /v1/exams, PATCH /v1/exams/:id body. */
+export const ExamUpsertSchema = z.object({
+  name: z.string().trim().min(1, "name required"),
+  exam_date: z.string().trim().min(1, "date required"),
+});
+export type ExamUpsert = z.infer<typeof ExamUpsertSchema>;
 
 /** GET /v1/today */
 export const TodaySummarySchema = z.object({
@@ -152,6 +166,7 @@ export const GraphNodeSchema = z.object({
   kind: GraphNodeKindSchema,
   label: z.string(), // card -> the question; concept -> the concept name
   answer: z.string().nullable(), // card -> its answer (for the hover popover); null for concepts
+  description: z.string().nullable(), // concept -> one-clause AI gloss (tentative); null for cards
   topic: z.string().nullable(),
   noteId: z.string().nullable(), // card -> its note; concept -> a primary note or null
   origin: CardOriginSchema, // 'inferred' concepts render tentative
@@ -178,11 +193,29 @@ export type Graph = z.infer<typeof GraphSchema>;
 
 // ───────────────────────── requests ─────────────────────────
 
+/** Chat answering mode. `notes` = grounded strictly in the user's own material
+ * (refuses what isn't there). `open` = notes first, but if the notes don't cover
+ * it the assistant may answer from general AI knowledge (clearly labeled). */
+export const ChatModeSchema = z.enum(["notes", "open"]);
+export type ChatMode = z.infer<typeof ChatModeSchema>;
+
 /** POST /v1/chat body */
 export const ChatRequestSchema = z.object({
   message: z.string().trim().min(1, "empty message"),
+  mode: ChatModeSchema.optional().default("notes"),
 });
 export type ChatRequest = z.infer<typeof ChatRequestSchema>;
+
+/** A provenance chip shown under a chat answer (sent via the X-Entri-Sources
+ * header). `note` = a cited page from the user's OWN material (trusted/teal);
+ * `ai` = general AI knowledge, rendered visibly tentative (dashed taupe) and
+ * never disguised as the user's notes. */
+export const ChatSourceSchema = z.object({
+  label: z.string(),
+  kind: z.enum(["note", "ai"]),
+});
+export type ChatSource = z.infer<typeof ChatSourceSchema>;
+export const ChatSourceListSchema = z.array(ChatSourceSchema);
 
 /** GET /v1/chat/suggestions — LLM-generated prompts drawn from the user's own
  * cards, so each one is answerable by the grounded chat. `topic` is an optional
@@ -197,8 +230,6 @@ export const ChatSuggestionListSchema = z.array(ChatSuggestionSchema);
 /** PATCH /v1/me body — every field optional; unknown keys are stripped. */
 export const ProfilePatchSchema = z.object({
   display_name: z.string().nullable().optional(),
-  exam_name: z.string().nullable().optional(),
-  exam_date: z.string().nullable().optional(),
   timezone: z.string().optional(),
   study_hour_local: z.number().optional(),
 });

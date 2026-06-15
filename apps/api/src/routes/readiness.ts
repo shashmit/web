@@ -15,9 +15,15 @@ readiness.get("/", async (c) => {
   const db = c.get("db");
   const userId = c.get("userId");
 
-  const profile = orThrow(
-    await db.database.from("profiles").select("exam_date").eq("user_id", userId).maybeSingle()
-  ) as { exam_date: string | null } | null;
+  // Readiness decays to a target exam date. The client passes ?examId to pick
+  // which tracked exam; with none we fall back to the soonest upcoming exam (or
+  // the most recent one if all are past), and to today if no exams exist.
+  const examId = c.req.query("examId");
+  const exams = orThrow(
+    await db.database.from("exams").select("id, exam_date").order("exam_date", { ascending: true })
+  ) as { id: string; exam_date: string }[];
+  const examDate = pickExamDate(exams, examId);
+
   const params = orThrow(
     await db.database
       .from("srs_params")
@@ -36,7 +42,7 @@ readiness.get("/", async (c) => {
   ) as unknown as (CardRow & { items: { topic: string | null } })[];
 
   const f = scheduler(params ?? undefined);
-  const at = profile?.exam_date ? new Date(profile.exam_date) : new Date();
+  const at = examDate ? new Date(examDate) : new Date();
 
   const flat: Row[] = rows.map((r) => ({ ...r, topic: r.items?.topic ?? null }));
   const overall = mean(flat.map((r) => retrievabilityAt(f, r, at)));
@@ -53,7 +59,7 @@ readiness.get("/", async (c) => {
 
   return c.json({
     percent: Math.round(overall * 100),
-    examDate: profile?.exam_date ?? null,
+    examDate,
     cardCount: flat.length,
     topics,
     deltaWeek: null, // needs a stability snapshot history; deferred (kept honest, not faked)
@@ -62,4 +68,19 @@ readiness.get("/", async (c) => {
 
 function mean(xs: number[]): number {
   return xs.length ? xs.reduce((a, b) => a + b, 0) / xs.length : 0;
+}
+
+// Resolve which exam date readiness targets. `exams` is sorted by date ascending.
+function pickExamDate(
+  exams: { id: string; exam_date: string }[],
+  examId: string | undefined
+): string | null {
+  if (exams.length === 0) return null;
+  if (examId) {
+    const picked = exams.find((e) => e.id === examId);
+    if (picked) return picked.exam_date;
+  }
+  const today = new Date().toISOString().slice(0, 10);
+  const upcoming = exams.find((e) => e.exam_date >= today);
+  return (upcoming ?? exams[exams.length - 1]).exam_date;
 }

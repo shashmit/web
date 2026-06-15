@@ -5,7 +5,8 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
 import { useGet } from "@/lib/use-api";
-import { GraphSchema, type Graph } from "@/lib/api-types";
+import { GraphSchema, type Graph, type GraphNode } from "@/lib/api-types";
+import ConceptInspector from "./ConceptInspector";
 
 // Canvas is client-only (force-graph reaches for `window` at import).
 const ForceGraph = dynamic(() => import("./ForceGraph"), {
@@ -40,6 +41,12 @@ export default function MapPage() {
   const router = useRouter();
   const { data, loading, error } = useGet<Graph>("/v1/graph", GraphSchema);
   const empty = !!data && data.nodes.length === 0;
+
+  // The AI-inferred concept whose inspector is pinned open (null = none). Derive
+  // a "live" view so a graph reload that drops the node clears the panel without
+  // a reset effect (and without a stale node lingering on screen).
+  const [selected, setSelected] = useState<GraphNode | null>(null);
+  const liveSelected = selected && data?.nodes.some((n) => n.id === selected.id) ? selected : null;
 
   // Reserve the overlay header's real height so the graph fit never parks nodes
   // behind the title band (measured live; it shrinks on mobile where the blurb hides).
@@ -86,9 +93,28 @@ export default function MapPage() {
             </div>
           </div>
         ) : (
-          data && <ForceGraph graph={data} onNavigate={open} topInset={inset} />
+          data && (
+            <ForceGraph
+              graph={data}
+              onNavigate={open}
+              onSelect={setSelected}
+              selectedId={liveSelected?.id ?? null}
+              topInset={inset}
+            />
+          )
         )}
       </div>
+
+      {data && liveSelected && (
+        <ConceptInspector
+          key={liveSelected.id}
+          node={liveSelected}
+          graph={data}
+          onClose={() => setSelected(null)}
+          onPick={setSelected}
+          onNavigate={open}
+        />
+      )}
 
       {/* title + legend float ON TOP of the graph as a translucent paper panel
           (blur + near-opaque paper keeps every label legible over a busy graph);

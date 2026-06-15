@@ -15,7 +15,7 @@ const MODES: { value: ThemeMode; icon: string; label: string; hint: string }[] =
   { value: "system", icon: "◓", label: "Auto", hint: "Follows your device" },
 ];
 
-type Form = { display_name: string; exam_name: string; exam_date: string; study_hour_local: number; timezone: string };
+type Form = { display_name: string; study_hour_local: number; timezone: string };
 
 export default function Settings() {
   const { mode, setMode } = useTheme();
@@ -32,8 +32,6 @@ export default function Settings() {
     if (profile.data && form === null) {
       setForm({
         display_name: profile.data.display_name ?? "",
-        exam_name: profile.data.exam_name ?? "",
-        exam_date: profile.data.exam_date ?? "",
         study_hour_local: profile.data.study_hour_local ?? 8,
         timezone: profile.data.timezone ?? "UTC",
       });
@@ -51,8 +49,6 @@ export default function Settings() {
     try {
       await api.patch("/v1/me", {
         display_name: form.display_name || null,
-        exam_name: form.exam_name || null,
-        exam_date: form.exam_date || null,
         study_hour_local: Number(form.study_hour_local),
         timezone: form.timezone,
       });
@@ -112,42 +108,29 @@ export default function Settings() {
 
       {/* study */}
       <div className="kicker mt-7 mb-3 px-0.5">Study</div>
+      <p className="text-muted text-[12.5px] -mt-1 mb-3 px-0.5">
+        Manage the exams you&apos;re tracking on the{" "}
+        <a href="/readiness" className="font-semibold text-marigold-deep hover:underline">
+          Readiness page
+        </a>
+        .
+      </p>
       <section className="card p-5 flex flex-col gap-4">
         {form === null ? (
           <p className="text-muted text-[13.5px]">Loading…</p>
         ) : (
           <>
             <label className="flex flex-col gap-1.5">
-              <span className="font-medium text-[14px]">Exam</span>
+              <span className="font-medium text-[14px]">Daily reminder (hour)</span>
               <input
+                type="number"
+                min={0}
+                max={23}
                 className="field"
-                value={form.exam_name}
-                placeholder="e.g. Physics A-level"
-                onChange={(e) => set("exam_name", e.target.value)}
+                value={form.study_hour_local}
+                onChange={(e) => set("study_hour_local", Number(e.target.value) as Form["study_hour_local"])}
               />
             </label>
-            <div className="grid grid-cols-2 gap-3">
-              <label className="flex flex-col gap-1.5">
-                <span className="font-medium text-[14px]">Exam date</span>
-                <input
-                  type="date"
-                  className="field"
-                  value={form.exam_date}
-                  onChange={(e) => set("exam_date", e.target.value)}
-                />
-              </label>
-              <label className="flex flex-col gap-1.5">
-                <span className="font-medium text-[14px]">Daily reminder (hour)</span>
-                <input
-                  type="number"
-                  min={0}
-                  max={23}
-                  className="field"
-                  value={form.study_hour_local}
-                  onChange={(e) => set("study_hour_local", Number(e.target.value) as Form["study_hour_local"])}
-                />
-              </label>
-            </div>
             <label className="flex flex-col gap-1.5">
               <span className="font-medium text-[14px]">Timezone</span>
               <input

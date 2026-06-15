@@ -1,6 +1,6 @@
 import { Hono } from "hono";
 import { embedMany, streamText } from "ai";
-import { ChatRequestSchema, type ChatSuggestion } from "@entri/types";
+import { ChatRequestSchema, type ChatSuggestion, type ChatSource } from "@entri/types";
 import type { AppEnv } from "../middleware/auth.js";
 import { aiConfigured, chatConfigured, embedModel, chatModel, EMBED_MODEL } from "../lib/ai.js";
 import { regenerateSuggestions } from "../services/suggestions.js";
@@ -36,16 +36,19 @@ type Chunk = { item_id: string; content: string; source_ref: string | null; simi
 const FLOOR = 0.3; // min cosine similarity to count a chunk as relevant
 const STRONG = 0.55; // a single chunk this strong is enough (sparse-corpus degrade)
 
-// POST /v1/chat  { message } — retrieve-then-generate over the user's own notes.
-// >=2 relevant chunks, or 1 strong chunk, grounds an answer; otherwise it
-// refuses rather than inventing. Answers cite the source page inline.
+// POST /v1/chat  { message, mode } — retrieve-then-generate over the user's own
+// notes. >=2 relevant chunks (or 1 strong chunk) grounds an answer cited to the
+// source page. When the notes don't cover the question:
+//   - mode "notes" (default): refuse rather than invent (the trust pillar).
+//   - mode "open": answer from general AI knowledge, flagged 'ai' so the UI shows
+//     it visibly tentative (dashed taupe) — never disguised as the user's notes.
 chat.post("/", async (c) => {
   if (!aiConfigured()) return c.json({ error: "AI not configured on the server" }, 503);
 
   const db = c.get("db");
   const parsed = ChatRequestSchema.safeParse(await c.req.json());
   if (!parsed.success) return c.json({ error: parsed.error.issues[0]?.message ?? "invalid request" }, 400);
-  const { message } = parsed.data;
+  const { message, mode } = parsed.data;
 
   // Embed the query, then nearest-neighbour over the user's chunks (RLS-scoped).
   const { embeddings } = await embedMany({ model: embedModel(), values: [message] });
@@ -61,22 +64,40 @@ chat.post("/", async (c) => {
   // Grounding gate.
   const relevant = chunks.filter((ch) => ch.similarity >= FLOOR);
   const grounded = relevant.length >= 2 || (relevant.length === 1 && relevant[0].similarity >= STRONG);
+
+  // Not in their notes: refuse (notes mode) or fall through to general AI (open mode).
   if (!grounded) {
-    return c.text(
-      "I can't find this in your notes yet. Capture the page it's on and I'll be able to answer from your own material."
-    );
+    if (mode !== "open") {
+      return c.text(
+        "I can't find this in your notes yet. Capture the page it's on, or switch on “Notes + AI” to let me answer from general knowledge."
+      );
+    }
+    const openSystem = `You are entri, a knowledgeable, friendly study tutor. The student's OWN notes don't cover this question, and they've turned on "Notes + AI" so you may answer from your general knowledge.
+Rules:
+- Answer accurately and concisely from well-established general knowledge.
+- Do NOT claim this came from their notes, and do NOT invent a page citation or a "(→ source)" tag.
+- If you're unsure or the question is ambiguous, say so plainly rather than guessing.
+- Format with light Markdown for readability: **bold** key terms, *italics* for emphasis, "-" bullet lists, and short paragraphs.`;
+    const openResult = streamText({ model: chatModel(), system: openSystem, prompt: message });
+    const openSources: ChatSource[] = [{ label: "General AI knowledge", kind: "ai" }];
+    return openResult.toTextStreamResponse({
+      headers: { "X-Entri-Sources": JSON.stringify(openSources) },
+    });
   }
 
   const context = relevant
     .map((ch, i) => `[${i + 1}] (${ch.source_ref ?? "your notes"})\n${ch.content}`)
     .join("\n\n");
-  const sources = [...new Set(relevant.map((ch) => ch.source_ref).filter(Boolean))];
+  const sources: ChatSource[] = [...new Set(relevant.map((ch) => ch.source_ref).filter(Boolean))].map(
+    (label) => ({ label: label as string, kind: "note" })
+  );
 
   const system = `You are entri, answering a student strictly from THEIR OWN notes below.
 Rules:
 - Use ONLY the provided notes. Do not add outside facts.
 - Cite the source inline in the form (→ <source>) using the source labels shown.
 - If the notes don't fully answer, say what they do say and that the rest isn't in their notes.
+- Format with light Markdown for readability: **bold** key terms, *italics* for emphasis, "-" bullet lists, and short paragraphs.
 Notes:
 ${context}`;
 

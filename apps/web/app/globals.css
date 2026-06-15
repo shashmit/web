@@ -217,6 +217,121 @@ summary:focus-visible,
   outline: none;
 }
 
+/* Rendered Markdown inside an assistant chat reply. Maps the model's bold,
+   italics, lists, headings, code, tables, and rules onto the Marginalia tokens.
+   Unlayered so it wins over Tailwind's base resets. */
+.chat-md > :first-child {
+  margin-top: 0;
+}
+.chat-md > :last-child {
+  margin-bottom: 0;
+}
+.chat-md p {
+  margin: 0 0 0.6em;
+}
+.chat-md strong {
+  font-weight: 600;
+  color: var(--ink);
+}
+.chat-md em {
+  font-style: italic;
+}
+.chat-md del {
+  text-decoration: line-through;
+  color: var(--muted);
+}
+.chat-md ul,
+.chat-md ol {
+  margin: 0.35em 0 0.7em;
+  padding-left: 1.3em;
+}
+.chat-md ul {
+  list-style: disc;
+}
+.chat-md ol {
+  list-style: decimal;
+}
+.chat-md li {
+  margin: 0.2em 0;
+}
+.chat-md li::marker {
+  color: var(--muted);
+}
+.chat-md h1,
+.chat-md h2,
+.chat-md h3,
+.chat-md h4 {
+  font-family: var(--font-display);
+  font-weight: 600;
+  color: var(--ink);
+  line-height: 1.25;
+  margin: 0.7em 0 0.3em;
+}
+.chat-md h1 {
+  font-size: 1.18em;
+}
+.chat-md h2 {
+  font-size: 1.1em;
+}
+.chat-md h3,
+.chat-md h4 {
+  font-size: 1.02em;
+}
+.chat-md a {
+  color: var(--info);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.chat-md code {
+  font-family: var(--font-mono);
+  font-size: 0.88em;
+  background: var(--surface);
+  padding: 0.05em 0.36em;
+  border-radius: 3px;
+}
+.chat-md pre {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  padding: 0.7em 0.85em;
+  overflow-x: auto;
+  margin: 0.55em 0;
+}
+.chat-md pre code {
+  background: none;
+  padding: 0;
+  font-size: 0.86em;
+}
+.chat-md blockquote {
+  border-left: 2px solid var(--line);
+  padding-left: 0.8em;
+  color: var(--muted);
+  margin: 0.55em 0;
+}
+.chat-md hr {
+  border: 0;
+  border-top: 1px solid var(--line);
+  margin: 0.85em 0;
+}
+.chat-md table {
+  border-collapse: collapse;
+  margin: 0.55em 0;
+  font-size: 0.92em;
+  display: block;
+  overflow-x: auto;
+}
+.chat-md th,
+.chat-md td {
+  border: 1px solid var(--line);
+  padding: 0.3em 0.55em;
+  text-align: left;
+}
+.chat-md th {
+  background: var(--surface);
+  font-weight: 600;
+  color: var(--ink);
+}
+
 /* Knowledge-graph hover popover. force-graph (float-tooltip) injects a dark
    .float-tooltip-kap box at runtime; override it into a Marginalia paper slip.
    !important is needed to beat the library's own injected stylesheet. */

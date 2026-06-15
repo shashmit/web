@@ -7,13 +7,16 @@ import { useGet } from "@/lib/use-api";
 import { api } from "@/lib/api";
 import {
   daysUntil,
+  nextExam,
   ProfileSchema,
+  ExamListSchema,
   TodaySummarySchema,
   StreakSchema,
   ReadinessSchema,
   NoteCardListSchema,
   InferredItemListSchema,
   type Profile,
+  type Exam,
   type TodaySummary,
   type Streak,
   type Readiness,
@@ -61,6 +64,7 @@ function greeting(d = new Date()) {
 export default function Today() {
   const { user } = useAuth();
   const profile = useGet<Profile>("/v1/me", ProfileSchema);
+  const exams = useGet<Exam[]>("/v1/exams", ExamListSchema);
   const today = useGet<TodaySummary>("/v1/today", TodaySummarySchema);
   const streak = useGet<Streak>("/v1/streak", StreakSchema);
   const readiness = useGet<Readiness>("/v1/readiness", ReadinessSchema);
@@ -70,8 +74,9 @@ export default function Today() {
   const [actingId, setActingId] = useState<string | null>(null);
 
   const name = profile.data?.display_name || user?.email?.split("@")[0] || "there";
-  const examName = profile.data?.exam_name;
-  const days = daysUntil(profile.data?.exam_date ?? null);
+  const upcomingExam = nextExam(exams.data);
+  const examName = upcomingExam?.name;
+  const days = daysUntil(upcomingExam?.exam_date ?? null);
   const dueCards = today.data?.dueCards ?? 0;
   const completed = today.data?.completed ?? 0;
   const estMinutes = today.data?.estMinutes ?? 0;

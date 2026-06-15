@@ -224,7 +224,7 @@ export type EdgeRow = {
   confidence: string | null;
   weight: number | string;
 };
-export type ConceptRow = { id: string; label: string; topic: string | null; origin: string; confidence: number | string };
+export type ConceptRow = { id: string; label: string; topic: string | null; origin: string; confidence: number | string; description: string | null };
 export type CardRow = { id: string; question: string | null; answer: string | null; topic: string | null; origin: string; note_id: string | null };
 
 export const GRAPH_EDGE_COLS = "subj_kind, subj_id, obj_kind, obj_id, predicate, source, confidence, weight";
@@ -268,14 +268,16 @@ export function assembleGraph(
     if (kind === "concept") {
       const c = conceptById.get(raw)!;
       return {
-        id, kind: "concept" as const, label: c.label, answer: null, topic: c.topic, noteId: null,
+        id, kind: "concept" as const, label: c.label, answer: null, description: c.description ?? null,
+        topic: c.topic, noteId: null,
         origin: (c.origin === "note" ? "note" : "inferred") as GraphNode["origin"],
         confidence: Number(c.confidence), degree: degree.get(id) ?? 0,
       };
     }
     const c = cardById.get(raw)!;
     return {
-      id, kind: "card" as const, label: c.question ?? "(card)", answer: c.answer, topic: c.topic, noteId: c.note_id,
+      id, kind: "card" as const, label: c.question ?? "(card)", answer: c.answer, description: null,
+      topic: c.topic, noteId: c.note_id,
       origin: (c.origin === "inferred" ? "inferred" : "note") as GraphNode["origin"],
       confidence: 1, degree: degree.get(id) ?? 0,
     };
